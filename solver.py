@@ -162,6 +162,59 @@ def get_tuple_deducer():
           return ', '.join(['Found {}'.format(name)]+removed)
   return 'Tuples', deducer
 
+def get_pointy_fish_deducer():
+  def intersects(constraint_a, constraint_b):
+    sa = set(constraint_a[1].cells)
+    return any(cb in sa for cb in constraint_b[1].cells)
+  def pointy_fish_set_iter(uniqueness_constraints, min_length, max_length, base_a = None, base_b = None):
+    """
+    Returns all combinations of sets of constraints, (a,b) such that each element of 'a'
+    does not intersect with any other element of 'a', each element of 'b' does not intersect
+    with any other element of 'b', each element of 'a' intersects all elements of 'b', and
+    each element of 'b' intersects all elements of 'a'.
+    'uniqueness_constraints' is a list of tuples of the form (constraint_name, constraint)
+    'min_length' is the minimum length of 'a' and 'b' which are returned
+    'max_length' is the maximum length of 'a' and 'b' which are returned
+    'a' and 'b' are lists of integer indexes
+    'base_a' and 'base_b' are used internally for recursion
+    """
+    a = [] if base_a is None else base_a
+    b = [] if base_b is None else base_b
+    if len(a) >= min_length and len(b) >= min_length:
+      yield a,b
+    if len(a) == max_length and len(b) == max_length:
+      return
+    # add all distinct constraint to 'a' that intersects all of 'b' and iterate on the resulting possibilities
+    # avoid double counting combinations of a [1,3] and [3,1] for example
+    min_new_a = 0 if not a else a[-1]+1 
+    for i in range(min_new_a, len(uniqueness_constraints)):
+      if i in b:
+        continue
+      if any(intersects(uniqueness_constraints[i], uniqueness_constraints[ai]) for ai in a):
+        continue
+      if any(not intersects(uniqueness_constraints[i], uniqueness_constraints[bi]) for bi in b):
+        continue
+      new_a = a+[i]
+      min_new_b = new_a[0]+1 if not b else b[-1]+1
+      for j in range(min_new_b, len(uniqueness_constraints)):
+        if any(not intersects(uniqueness_constraints[j], uniqueness_constraints[ai]) for ai in new_a):
+          continue
+        if any(intersects(uniqueness_constraints[j], uniqueness_constraints[bi]) for bi in b):
+          continue
+        new_b = b+[j]
+        for result in pointy_fish_set_iter(uniqueness_constraints, min_length, max_length, base_a = new_a, base_b = new_b):
+          yield result
+      
+  def deducer(puzzle):
+    uniqueness_constraints = [(name, con) for name, con in puzzle.constraints.items() if con.implies_uniqueness()]
+    for a, b in pointy_fish_set_iter(uniqueness_constraints, 2, 3):
+      a_names = [uniqueness_constraints[i][0] for i in a]
+      b_names = [uniqueness_constraints[i][0] for i in b]
+      print('{}, {}'.format(a_names, b_names))
+      # TODO
+    exit()
+  return deducer
+
 class SudokuSolver(Solver):
   def __init__(self, bifurcation_level=1):
     super().__init__()
@@ -176,6 +229,7 @@ class SudokuSolver(Solver):
 
 if __name__ == '__main__':
   puzzle = state.Sudoku()
+  get_pointy_fish_deducer()(puzzle)
   easy_data = [
     [7,4,0,0,3,0,0,1,0],
     [0,1,9,0,6,8,5,0,2],

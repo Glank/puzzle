@@ -40,6 +40,8 @@ class OneEachConstraint:
   @ property
   def cells(self):
     return self._cells
+  def implies_uniqueness(self):
+    return True
 
 class Sudoku(PuzzleState):
   def __init__(self):
