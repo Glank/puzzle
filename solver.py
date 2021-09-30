@@ -1,8 +1,6 @@
 import state
 from functools import partial
 
-DEBUG = False
-
 class Solver:
   def __init__(self):
     # (str, func(puzzle))
@@ -162,7 +160,7 @@ def get_tuple_deducer():
           return ', '.join(['Found {}'.format(name)]+removed)
   return 'Tuples', deducer
 
-def get_pointy_fish_deducer():
+def get_pointy_fish_deducer(min_size, max_size):
   def intersects(constraint_a, constraint_b):
     sa = set(constraint_a[1].cells)
     return any(cb in sa for cb in constraint_b[1].cells)
@@ -206,30 +204,131 @@ def get_pointy_fish_deducer():
           yield result
       
   def deducer(puzzle):
+    DEBUG = False
     uniqueness_constraints = [(name, con) for name, con in puzzle.constraints.items() if con.implies_uniqueness()]
-    for a, b in pointy_fish_set_iter(uniqueness_constraints, 2, 3):
+    for a, b in pointy_fish_set_iter(uniqueness_constraints, min_size, max_size):
       a_names = [uniqueness_constraints[i][0] for i in a]
       b_names = [uniqueness_constraints[i][0] for i in b]
-      print('{}, {}'.format(a_names, b_names))
-      # TODO
-    exit()
-  return deducer
+      # find all free cells
+      a_cells, b_cells = [], []
+      for i in a:
+        a_cells.extend(cid for cid in uniqueness_constraints[i][1].cells if len(puzzle.cell_options[cid])>1)
+      for i in b:
+        b_cells.extend(cid for cid in uniqueness_constraints[i][1].cells if len(puzzle.cell_options[cid])>1)
+      a_cells, b_cells = set(a_cells), set(b_cells)
+      if not a_cells or not b_cells:
+        continue
+      # find their intersection and differences
+      ab_opts, ao_opts, bo_opts = set(), set(), set()
+      for cid in (a_cells | b_cells):
+        opts = puzzle.cell_options[cid]
+        in_a = cid in a_cells
+        in_b = cid in b_cells
+        if in_a and in_b:
+          ab_opts.update(opts)
+        elif in_a:
+          ao_opts.update(opts)
+        else: #in_b
+          bo_opts.update(opts)
+      if DEBUG:
+        print('a: {}'.format(a_names))
+        print('ab_opts: {}'.format(ab_opts)) 
+        print('ao_opts: {}'.format(ao_opts)) 
+        print('bo_opts: {}'.format(bo_opts)) 
+      # options present in the intersection of a and b but not in a-only
+      # cells are ruled out of b-only cells if they are present in each
+      # distinct intersection of (a_i, b) constraints.
+      constrained_a_opts = ab_opts-ao_opts
+      if constrained_a_opts:
+        # check for presence in each distinct intersection
+        for i in a:
+          int_opts = set()
+          for j in b:
+            intersection = set(uniqueness_constraints[i][1].cells) & set(uniqueness_constraints[j][1].cells)
+            for cid in intersection:
+              int_opts.update(puzzle.cell_options[cid])
+          constrained_a_opts &= int_opts
+          if not constrained_a_opts:
+            break
+      ruled_out_b_opts = bo_opts & constrained_a_opts
+      if constrained_a_opts and ruled_out_b_opts:
+        found = []
+        for cid in (b_cells-a_cells):
+          init_len = len(puzzle.cell_options[cid])
+          puzzle.cell_options[cid] = [opt for opt in puzzle.cell_options[cid] if opt not in constrained_a_opts]
+          final_len = len(puzzle.cell_options[cid])
+          if final_len != init_len:
+            found.append(cid)
+        ret = "(a) Ruled out {} from {} (i.e. cells in {} but not {})".format(ruled_out_b_opts, found, b_names, a_names)
+        if DEBUG:
+          print('a: {}'.format(a_names))
+          print('ab_opts: {}'.format(ab_opts)) 
+          print('ao_opts: {}'.format(ao_opts)) 
+          print('bo_opts: {}'.format(bo_opts)) 
+          print(constrained_a_opts)
+          print(ruled_out_b_opts)
+          print('a intersect b options: {}'.format(ab_opts))
+          print('a only options: {}'.format(ao_opts))
+          print('b only options: {}'.format(bo_opts))
+          for cid in sorted(list(a_cells)):
+            print("{}: {}".format(cid, puzzle.cell_options[cid]))
+        return ret
+
+      # ... and vice versa
+      constrained_b_opts = ab_opts-bo_opts
+      if constrained_b_opts:
+        # check for presence in each distinct intersection
+        for j in b:
+          int_opts = set()
+          for i in a:
+            intersection = set(uniqueness_constraints[i][1].cells) & set(uniqueness_constraints[j][1].cells)
+            for cid in intersection:
+              int_opts.update(puzzle.cell_options[cid])
+          constrained_b_opts &= int_opts
+          if not constrained_b_opts:
+            break
+      ruled_out_a_opts = ao_opts & constrained_b_opts
+      if constrained_b_opts and ruled_out_a_opts:
+        found = []
+        for cid in (a_cells-b_cells):
+          init_len = len(puzzle.cell_options[cid])
+          puzzle.cell_options[cid] = [opt for opt in puzzle.cell_options[cid] if opt not in constrained_b_opts]
+          final_len = len(puzzle.cell_options[cid])
+          if final_len != init_len:
+            found.append(cid)
+        ret = "(b) Ruled out {} from {} (i.e. cells in {} but not {})".format(ruled_out_a_opts, found, a_names, b_names)
+        if DEBUG:
+          print('a: {}'.format(a_names))
+          print('ab_opts: {}'.format(ab_opts)) 
+          print('ao_opts: {}'.format(ao_opts)) 
+          print('bo_opts: {}'.format(bo_opts)) 
+          print(constrained_b_opts)
+          print(ruled_out_a_opts)
+          print('a intersect b options: {}'.format(ab_opts))
+          print('a only options: {}'.format(ao_opts))
+          print('b only options: {}'.format(bo_opts))
+          for cid in sorted(list(b_cells)):
+            print("{}: {}".format(cid, puzzle.cell_options[cid]))
+        return ret
+  return "Pointy-Fish", deducer
 
 class SudokuSolver(Solver):
   def __init__(self, bifurcation_level=1):
     super().__init__()
     self.deducers.append(get_only_opt_deducer())
+    # TODO: make constraint violation deducer more human-like (group constraint violations, notice solved cells)
     self.deducers.append(get_constraint_violation_deducer())
     self.deducers.append(get_tuple_deducer())
-    # TODO; generalize 'Pointing Pairs' strategy
-    # I think pointing-pairs, xwings, swordfish, and jellyfish are generally part of the same strategic class
-    # TODO: generalize Y-wing strategy
+    # Add deducers for pointing pairs, x-wings, swordfish, and jellyfish
+    for i in range(1,5):
+      self.deducers.append(get_pointy_fish_deducer(i, i))
+    # TODO: generalize Y-wing strategy, not entirely sure this is meaningfully
+    # different than limited deduction depth bifurcation
     if bifurcation_level != 0:
       self.deducers.append(get_bifurcation_deducer(self, bifurcation_level))
 
 if __name__ == '__main__':
   puzzle = state.Sudoku()
-  get_pointy_fish_deducer()(puzzle)
   easy_data = [
     [7,4,0,0,3,0,0,1,0],
     [0,1,9,0,6,8,5,0,2],
@@ -252,16 +351,42 @@ if __name__ == '__main__':
     [0,0,0,0,9,8,0,0,3],
     [0,9,5,0,0,3,0,0,0],
   ]
-  # best: bifurcation level 1 at step 350
-  puzzle.load_from_list(hard_data)
+  # best: solved in 383 steps w/o bifurcation
+  super_hard_data = [
+    [0,2,0,0,0,0,0,3,0],
+    [4,0,0,0,0,0,0,0,7],
+    [0,0,1,2,3,0,4,0,0],
+    [0,0,4,1,5,0,3,0,0],
+    [0,0,5,6,4,0,1,0,0],
+    [0,0,0,0,0,0,0,0,0],
+    [0,0,2,5,1,0,6,0,0],
+    [5,0,0,0,0,0,0,9,0],
+    [0,8,0,0,0,0,0,0,5],
+  ]
+  # requires multiple jellyfish, apparently
+  # best: 379 steps w/o bifurcation
+  puzzle.load_from_list(super_hard_data)
+  #for cid, opts in xwing_cell_options.items():
+  #  puzzle.cell_options[cid] = opts
   print(puzzle)
   
   deduction = True
-  solver = SudokuSolver(bifurcation_level=1)
+  solver = SudokuSolver(bifurcation_level=0)
   i = 0
+  slow = False
+  enable_slow = False
   while puzzle.free_cells() > 0 and deduction:
     deduction = solver.make_deduction(puzzle)
     if deduction:
+      if deduction[0] == "Pointy-Fish":
+        slow = True
       print('{}, {}: {}'.format(i, deduction[0], deduction[1]))
       print(puzzle)
+      if slow and enable_slow:
+        print('[press enter]', end='')
+        input()
     i += 1
+  assert not puzzle.broken()
+  assert puzzle.constraints_satisfied()
+  assert puzzle.free_cells() == 0
+  print("Solved.")
