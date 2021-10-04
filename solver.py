@@ -21,6 +21,13 @@ class Solver:
   def disabled_deducers(self):
     return self._disabled_deducers
 
+class Deduction:
+  def __init__(self, name, cells_affected):
+    self.name = name
+    self.cells_affected = cells_affected
+  def __str__(self):
+    return '{}. Affected {}'.format(self.name, self.cells_affected)
+
 def get_bifurcation_deducer(base_solver, max_depth):
   def recursive_deduce(puzzle, depth, max_depth):
     if depth > max_depth:
@@ -41,7 +48,7 @@ def get_bifurcation_deducer(base_solver, max_depth):
         puzzle.load(state)
         if ruled_out:
           puzzle.cell_options[cid] = [o for o in opts if o != opt]
-          return '{} ruled out from {}'.format(opt, cid)
+          return Deduction('{} ruled out'.format(opt), [cid])
       puzzle.cell_options[cid] = opts
     return None
   name = 'Bifurcation ({})'.format(max_depth)
@@ -62,11 +69,20 @@ def get_constraint_violation_deducer():
     for constraint_name, constraint in puzzle.constraints.items():
       for cid in puzzle.cell_options.keys():
         opts = puzzle.cell_options[cid]
+        if len(opts) <= 1:
+          continue
+        cell_violations = set()
         for opt in opts:
           puzzle.cell_options[cid] = [opt]
-          if not constraint(puzzle):
-            puzzle.cell_options[cid] = [o for o in opts if o != opt]
-            return '{} ruled out from {} via {}'.format(opt, cid, constraint_name)
+          if not constraint(puzzle) or constraint.broken(puzzle):
+            cell_violations.add(opt)
+        if len(cell_violations) == len(opts)-1:
+          solution = list((set(opts)-cell_violations))[0]
+          puzzle.cell_options[cid] = [solution]
+          return Deduction('Naked single, {}'.format(solution), [cid])
+        elif cell_violations:
+          puzzle.cell_options[cid] = [o for o in opts if o not in cell_violations]
+          return Deduction('{} ruled out'.format(sorted(list(cell_violations))), [cid])
         puzzle.cell_options[cid] = opts
     return None
   return 'Constraint Violation', deducer
@@ -94,7 +110,7 @@ def get_only_opt_deducer():
         if cnt == 1 and opt not in fixed:
           cid = last_seen[opt]
           puzzle.cell_options[cid] = [opt]
-          return '{} only option for {} in {}'.format(cid, opt, constraint_name)
+          return Deduction('Only one cell for {} in {}'.format(opt, constraint_name), [cid])
     return None
   return "Only Option", deducer
 
@@ -142,10 +158,10 @@ def get_tuple_deducer():
           # remember to skip cells in this tuple on next pass
           puzzle.deductions['tuple_cell_sets'][constraint_name] = tuple_cell_sets.union(tup)
           # add deduced OneEachConstraint to puzzle
-          name = '{} Tuple in {}'.format(sorted(list(tup_opts)), constraint_name)
+          name = '{} tuple in {}'.format(sorted(list(tup_opts)), constraint_name)
           puzzle.constraints[name] = state.OneEachConstraint(tup, tup_opts)
           # remove options in this tuple from the other unlocked cells in this constraint
-          removed = []
+          affected = set()
           tup_set = set(tup)
           for cid, options in unlocked_cells:
             if cid in tup_set:
@@ -153,11 +169,11 @@ def get_tuple_deducer():
             filtered_options = []
             for opt in options:
               if opt in tup_opts:
-                removed.append('{} ruled out of {}'.format(opt, cid))
+                affected.add(cid)
               else:
                 filtered_options.append(opt)
             puzzle.cell_options[cid] = filtered_options
-          return ', '.join(['Found {}'.format(name)]+removed)
+          return Deduction('Found {}'.format(name), list(affected))
   return 'Tuples', deducer
 
 def get_pointy_fish_deducer(min_size, max_size):
@@ -259,7 +275,7 @@ def get_pointy_fish_deducer(min_size, max_size):
           final_len = len(puzzle.cell_options[cid])
           if final_len != init_len:
             found.append(cid)
-        ret = "(a) Ruled out {} from {} (i.e. cells in {} but not {})".format(ruled_out_b_opts, found, b_names, a_names)
+        ret = Deduction("(a) Ruled out {} from cells in {} but not {}".format(ruled_out_b_opts, b_names, a_names), found)
         if DEBUG:
           print('a: {}'.format(a_names))
           print('ab_opts: {}'.format(ab_opts)) 
@@ -296,7 +312,7 @@ def get_pointy_fish_deducer(min_size, max_size):
           final_len = len(puzzle.cell_options[cid])
           if final_len != init_len:
             found.append(cid)
-        ret = "(b) Ruled out {} from {} (i.e. cells in {} but not {})".format(ruled_out_a_opts, found, a_names, b_names)
+        ret = Deduction("(b) Ruled out {} from cells in {} but not {}".format(ruled_out_a_opts, a_names, b_names), found)
         if DEBUG:
           print('a: {}'.format(a_names))
           print('ab_opts: {}'.format(ab_opts)) 
@@ -313,17 +329,19 @@ def get_pointy_fish_deducer(min_size, max_size):
   return "Pointy-Fish", deducer
 
 class SudokuSolver(Solver):
-  def __init__(self, bifurcation_level=1):
+  def __init__(self, bifurcation_level=0):
     super().__init__()
     self.deducers.append(get_only_opt_deducer())
-    # TODO: make constraint violation deducer more human-like (group constraint violations, notice solved cells)
     self.deducers.append(get_constraint_violation_deducer())
     self.deducers.append(get_tuple_deducer())
     # Add deducers for pointing pairs, x-wings, swordfish, and jellyfish
     for i in range(1,5):
       self.deducers.append(get_pointy_fish_deducer(i, i))
-    # TODO: generalize Y-wing strategy, not entirely sure this is meaningfully
-    # different than limited deduction depth bifurcation
+    # TODO: generalize Y-wing, skyscraper, winged x-wings, etc. strategies.
+    # They're all effectively a limited deduction depth single bifurcation
+    # where you rule out some options from a cell after some N deductions
+    # based on assuming all options in turn of some other cell or option set.
+    # I'll call it the odd-wing deducer.
     if bifurcation_level != 0:
       self.deducers.append(get_bifurcation_deducer(self, bifurcation_level))
 
@@ -351,7 +369,7 @@ if __name__ == '__main__':
     [0,0,0,0,9,8,0,0,3],
     [0,9,5,0,0,3,0,0,0],
   ]
-  # best: solved in 383 steps w/o bifurcation
+  # Requires jellyfish:
   super_hard_data = [
     [0,2,0,0,0,0,0,3,0],
     [4,0,0,0,0,0,0,0,7],
@@ -363,8 +381,6 @@ if __name__ == '__main__':
     [5,0,0,0,0,0,0,9,0],
     [0,8,0,0,0,0,0,0,5],
   ]
-  # requires multiple jellyfish, apparently
-  # best: 379 steps w/o bifurcation
   puzzle.load_from_list(super_hard_data)
   #for cid, opts in xwing_cell_options.items():
   #  puzzle.cell_options[cid] = opts
@@ -374,11 +390,11 @@ if __name__ == '__main__':
   solver = SudokuSolver(bifurcation_level=0)
   i = 0
   slow = False
-  enable_slow = False
+  enable_slow = True
   while puzzle.free_cells() > 0 and deduction:
     deduction = solver.make_deduction(puzzle)
     if deduction:
-      if deduction[0] == "Pointy-Fish":
+      if deduction[0] == "Tuples":
         slow = True
       print('{}, {}: {}'.format(i, deduction[0], deduction[1]))
       print(puzzle)

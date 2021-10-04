@@ -26,10 +26,30 @@ class PuzzleState:
   def load(self, data):
     self._cell_options, self._constraints, self._deductions = pickle.loads(data)
 
-class OneEachConstraint:
+class Constraint:
   def __init__(self, cells, options):
     self._cells = list(cells)
-    self._options= list(options)
+  @ property
+  def cells(self):
+    return self._cells
+  def __call__(self, puzzle):
+    raise NotImplementedError('__call__ not implemented for {}'.format(type(self)))
+  def implies_uniqueness(self):
+    return False
+  def broken(self, puzzle):
+    # Returns true if the constraint is impossible to satisfy with the
+    # current cell options, even if it's not currently violated.
+    if self.implies_uniqueness():
+      opt_set = set()
+      for cid in self.cells:
+        opt_set.update(puzzle.cell_options[cid])
+      return len(opt_set) != len(self.cells)
+    return False
+
+class OneEachConstraint(Constraint):
+  def __init__(self, cells, options):
+    self._cells = list(cells)
+    self._options = list(options)
   def __call__(self, puzzle):
     options = (puzzle._cell_options[cid] for cid in self.cells)
     locked_cells = [opts[0] for opts in options if len(opts) == 1]
@@ -37,9 +57,6 @@ class OneEachConstraint:
   @ property
   def options(self):
     return self._options
-  @ property
-  def cells(self):
-    return self._cells
   def implies_uniqueness(self):
     return True
 
