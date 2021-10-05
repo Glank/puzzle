@@ -1,15 +1,21 @@
 import state
 from functools import partial
+import re
 
 class Solver:
   def __init__(self):
     # (str, func(puzzle))
     self._deducers = []
-    self._disabled_deducers = set()
+    self._disabled_deducers = []
+  def _disable_after(self, deducer_name):
+    for disabled in self._disabled_deducers:
+      if re.match(disabled, deducer_name):
+        return True
+    return False
   def make_deduction(self, puzzle):
     for deducer_name, deducer in self._deducers:
-      if deducer_name in self._disabled_deducers:
-        continue
+      if self._disable_after(deducer_name):
+        break
       deduction = deducer(puzzle)
       if deduction:
         return deducer_name, deduction
@@ -38,14 +44,14 @@ def get_bifurcation_deducer(base_solver, max_depth):
       opts = puzzle.cell_options[cid]
       for opt in opts:
         puzzle.cell_options[cid] = [opt]
-        state = puzzle.save()   
+        puzzle_state = puzzle.save()   
         deduction = True
         while deduction and not puzzle.broken() and puzzle.constraints_satisfied():
           deduction = base_solver.make_deduction(puzzle) 
           if not deduction:
             deduction = recursive_deduce(puzzle, depth+1, max_depth)
         ruled_out = puzzle.broken() or not puzzle.constraints_satisfied()
-        puzzle.load(state)
+        puzzle.load(puzzle_state)
         if ruled_out:
           puzzle.cell_options[cid] = [o for o in opts if o != opt]
           return Deduction('{} ruled out'.format(opt), [cid])
@@ -53,14 +59,14 @@ def get_bifurcation_deducer(base_solver, max_depth):
     return None
   name = 'Bifurcation ({})'.format(max_depth)
   def deducer(puzzle):
-    base_solver.disabled_deducers.add(name)
+    base_solver.disabled_deducers.append(r'Bifurcation.*')
     lvl = 1
     deduction = recursive_deduce(puzzle, 1, max_depth=lvl)
     while not deduction and lvl < max_depth:
       lvl += 1
       print('Raising bifurcation level to {}.'.format(lvl)) 
       deduction = recursive_deduce(puzzle, 1, max_depth=lvl)
-    base_solver.disabled_deducers.remove(name)
+    base_solver.disabled_deducers.pop(-1)
     return deduction
   return name, deducer
 
@@ -177,6 +183,7 @@ def get_tuple_deducer():
   return 'Tuples', deducer
 
 def get_pointy_fish_deducer(min_size, max_size):
+  # TODO: figure out how to incorperate non-unique constraints that constraint an option (n times) to a region that overlaps uniqueness constraints.
   def intersects(constraint_a, constraint_b):
     sa = set(constraint_a[1].cells)
     return any(cb in sa for cb in constraint_b[1].cells)
@@ -328,20 +335,85 @@ def get_pointy_fish_deducer(min_size, max_size):
         return ret
   return "Pointy-Fish", deducer
 
+def get_odd_wing_deducer(base_solver, max_depth=5, max_split=2):
+  def deduce(puzzle, solver, max_depth):
+    for cur_cid in puzzle.cell_options.keys():
+      opts = puzzle.cell_options[cur_cid]
+      if len(opts) > max_split:
+        continue
+      # cid in here if cid affected in every opt choice
+      joint_cells_affected = None
+      # values are sets of the union of options at the end of deduction chains
+      joint_cell_options = None
+      for opt in opts:
+        puzzle_state = puzzle.save()   
+        puzzle.cell_options[cur_cid] = [opt]
+        cells_affected = set()
+        steps = 0
+        deduction = True
+        while steps < max_depth and deduction and puzzle.constraints_satisfied() and not puzzle.broken():
+          deduction = solver.make_deduction(puzzle)
+          if deduction:
+            cells_affected.update(deduction[1].cells_affected)
+          steps+=1
+        cell_options = {}
+        for cid in cells_affected:
+          cell_options[cid] = set(puzzle.cell_options[cid])
+        puzzle.load(puzzle_state)
+        if not puzzle.constraints_satisfied() or puzzle.broken():
+          puzzle.cell_options[cur_cid] = [o for o in opts if o != opt]
+          return Deduction('Chain of length {} ruled out {}'.format(steps, opt), [cur_cid])
+        if joint_cells_affected is not None:
+          for cid in (joint_cells_affected-cells_affected):
+            del joint_cell_options[cid]
+          joint_cells_affected = joint_cells_affected & cells_affected
+          for cid in joint_cells_affected:
+            joint_cell_options[cid] = joint_cell_options[cid] | cell_options[cid]
+        else:
+          joint_cells_affected = cells_affected
+          joint_cell_options = cell_options
+        if not joint_cells_affected:
+          break
+      if joint_cells_affected:
+        real_affected = []
+        ruled_out = []
+        for cid in joint_cells_affected:
+          if len(joint_cell_options[cid]) < len(puzzle.cell_options[cid]):
+            real_affected.append(cid)
+            old = set(puzzle.cell_options[cid])
+            puzzle.cell_options[cid] = sorted(list(joint_cell_options[cid]))
+            ruled_out.append(old-joint_cell_options[cid])
+        if real_affected:
+          return Deduction('For every option ({}) in {}, ruled out {} from cells respectively.'.format(puzzle.cell_options[cur_cid], cur_cid, ruled_out), real_affected)
+  name = 'Odd Wing ({}, {})'.format(max_depth, max_split)
+  def deducer(puzzle):
+    base_solver.disabled_deducers.append(r'Bifurcation.*')
+    base_solver.disabled_deducers.append(r'Odd Wing.*')
+    deduction = None
+    # TODO: it would be more efficient to deduce at max depth and backtrack to minimum depth needed for the deduced cell.
+    depth = 0 
+    while depth < max_depth and deduction is None:
+      depth += 1
+      deduction = deduce(puzzle, base_solver, depth)
+    base_solver.disabled_deducers.pop(-1)
+    base_solver.disabled_deducers.pop(-1)
+    return deduction
+  return name, deducer
+
 class SudokuSolver(Solver):
   def __init__(self, bifurcation_level=0):
     super().__init__()
     self.deducers.append(get_only_opt_deducer())
     self.deducers.append(get_constraint_violation_deducer())
     self.deducers.append(get_tuple_deducer())
-    # Add deducers for pointing pairs, x-wings, swordfish, and jellyfish
-    for i in range(1,5):
+    # pointing pairs and x-wings
+    for i in range(1,3):
       self.deducers.append(get_pointy_fish_deducer(i, i))
-    # TODO: generalize Y-wing, skyscraper, winged x-wings, etc. strategies.
-    # They're all effectively a limited deduction depth single bifurcation
-    # where you rule out some options from a cell after some N deductions
-    # based on assuming all options in turn of some other cell or option set.
-    # I'll call it the odd-wing deducer.
+    # Y-wing, skyscraper, winged x-wings, etc.
+    self.deducers.append(get_odd_wing_deducer(self))
+    # swordfish and jellyfish
+    for i in range(3,5):
+      self.deducers.append(get_pointy_fish_deducer(i, i))
     if bifurcation_level != 0:
       self.deducers.append(get_bifurcation_deducer(self, bifurcation_level))
 
@@ -394,7 +466,7 @@ if __name__ == '__main__':
   while puzzle.free_cells() > 0 and deduction:
     deduction = solver.make_deduction(puzzle)
     if deduction:
-      if deduction[0] == "Tuples":
+      if re.match('Odd Wing.*', deduction[0]):
         slow = True
       print('{}, {}: {}'.format(i, deduction[0], deduction[1]))
       print(puzzle)
